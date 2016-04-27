@@ -4,11 +4,34 @@ import sys
 import re
 import os
 import pickle
+import time
 
 from argparse import ArgumentParser
 from subprocess import check_output
 from pushover import init, Client
 from configparser import ConfigParser
+from functools import wraps
+
+
+def suppression_window(function):
+    @wraps(function)
+    def wrapper(inst, *args, **kwargs):
+        last_checked_filename = "%s/last-checked_%s.p" % (inst.data_dir, function.__name__)
+
+        last_checked_time = 0
+        if os.path.exists(last_checked_filename):
+            last_checked_time = pickle.load(open(last_checked_filename, "rb"))
+
+        current_time = int(time.time())
+        if current_time >= last_checked_time + inst.suppression_window:
+            function(inst, *args, **kwargs)
+
+            if not os.path.exists(inst.data_dir):
+                os.mkdir(inst.data_dir)
+
+            pickle.dump(current_time, open(last_checked_filename, "wb"))
+
+    return wrapper
 
 
 class RaidStatusChecker(object):
@@ -16,10 +39,13 @@ class RaidStatusChecker(object):
         init(config.get("settings", "pushover_api_token"))
         self.client = Client(config.get("settings", "pushover_user_key"))
         self.btrfs_mount_points = [path for key, path in config.items("btrfs_mount_points")]
+        self.data_dir = config.get("settings", "data_directory")
+        self.suppression_window = int(config.get("settings", "suppression_window"))
 
+    @suppression_window
     def check_btrfs_stats(self):
         for mount_point in self.btrfs_mount_points:
-            stats_filename = "data/btrfs-stats_%s.p" % mount_point[1:].replace("/", "-")
+            stats_filename = "%s/btrfs-stats_%s.p" % (self.data_dir, mount_point[1:].replace("/", "-"))
 
             device_stats = {}
             if os.path.exists(stats_filename):
@@ -39,14 +65,15 @@ class RaidStatusChecker(object):
                         device_stats[match.group(1)][match.group(2)] = int(match.group(3))
                         new_errors = True
 
-            if not os.path.exists("data"):
-                os.mkdir("data")
+            if not os.path.exists(self.data_dir):
+                os.mkdir(self.data_dir)
 
             pickle.dump(device_stats, open(stats_filename, "wb"))
 
             if new_errors is not False:
                 self.client.send_message(status, title="BTRFS Errors: %s" % mount_point)
 
+    @suppression_window
     def check_btrfs_drives(self):
         status = check_output(["sudo", "btrfs", "fi", "show", "-d"]).decode("utf-8").strip()
 
@@ -54,6 +81,7 @@ class RaidStatusChecker(object):
         if regex.match(status) is not None:
             self.client.send_message(status, title="BTRFS Array Error")
 
+    @suppression_window
     def check_zfs_drives(self):
         status = check_output(["sudo", "zpool", "status", "-x"])
         if status != "all pools are healthy":
@@ -70,7 +98,7 @@ def main(argv=None):
         argv = sys.argv[1:]
 
     parser = ArgumentParser()
-    parser.add_argument("-c", "--config", action="store", help="Configuration File", metavar="CONFIGFILE")
+    parser.add_argument("-c", "--config", action="store", help="Configuration File", metavar="CONFIG_FILE")
     parser.set_defaults(config="settings.cfg")
 
     options = parser.parse_args(argv)
