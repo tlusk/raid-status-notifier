@@ -40,7 +40,9 @@ class RaidStatusChecker(object):
         self.client = Client(config.get("settings", "pushover_user_key"))
         self.btrfs_mount_points = [path for key, path in config.items("btrfs_mount_points")]
         self.data_dir = config.get("settings", "data_directory")
-        self.suppression_window = int(config.get("settings", "suppression_window"))
+        self.suppression_window = config.getint("settings", "suppression_window")
+        self.btrfs_enabled = config.getboolean("settings", "btrfs_enabled")
+        self.zfs_enabled = config.getboolean("settings", "zfs_enabled")
 
     @suppression_window
     def check_btrfs_stats(self):
@@ -88,9 +90,12 @@ class RaidStatusChecker(object):
             self.client.send_message(status, title="ZFS Array Error")
 
     def run(self):
-        self.check_zfs_drives()
-        self.check_btrfs_stats()
-        self.check_btrfs_drives()
+        if self.zfs_enabled:
+            self.check_zfs_drives()
+
+        if self.btrfs_enabled:
+            self.check_btrfs_stats()
+            self.check_btrfs_drives()
 
 
 def main(argv=None):
